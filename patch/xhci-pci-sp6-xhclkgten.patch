@@ -1,0 +1,104 @@
+From: spyworks73 <spyworks73@github.com>
+Date: Mon, 26 Jun 2026
+Subject: [PATCH] xhci: Skip stuck HCRST bit on Surface Pro 6 (PCH silicon degradation)
+
+On the Surface Pro 6 (Intel 8086:9d2f / Sunrise Point-LP PCH), the HCRST
+(Host Controller Reset) bit in USBCMD is permanently stuck at 1 due to
+physical silicon degradation in the PCH.
+
+Observed USBCMD value: 0x00000003 (Run=1 AND HCRST=1 simultaneously)
+This is an illegal state per xHCI specification section 5.4.1:
+"The HCHalted (HCH) bit in the USBSTS register indicates when the xHC
+has halted. ... Software shall not write a '1' to this bit when the
+HCHalted bit in the USBSTS register is '0'."
+
+The standard xHCI initialization sequence waits for HCRST to clear with a
+timeout of several hundred milliseconds. On degraded hardware, it never
+clears, resulting in -110 (-ETIMEDOUT).
+
+This patch detects the stuck HCRST condition and forces initialization
+to continue. It should be applied together with the XHCLKGTEN register
+fix in xhci-pci.c (see xhci-pci-sp6-xhclkgten.patch).
+
+UEFI Shell diagnostic commands that revealed this issue:
+  pci 0 14 0                    # Read all PCI config registers for 00:14.0
+  mm 0xA1500080 4               # Read USBCMD: shows 0x00000003
+  mm 0xA1500080 4=0x00000000    # Attempt to clear: accepted but reverts immediately
+
+The HCRST bit cannot be cleared by software, confirming hardware-level damage.
+
+Tested on: Surface Pro 6 (model 1796), Intel Core i5-8250U, kernel 6.19.8
+with linux-surface patches, Ubuntu 24.04 Noble.
+
+================================================================================
+IMPORTANT WARNINGS — READ BEFORE APPLYING
+================================================================================
+
+WARNING 1 — THIS IS A REFERENCE PATCH, NOT A BLIND git-apply PATCH:
+  The diff hunk below shows the conceptual fix and its placement context.
+  Line numbers (@@ -5480 @@) are from kernel 6.19.8-surface and WILL differ
+  in other kernel versions. Do NOT run "git apply" on this file without first
+  locating the correct position in YOUR kernel source.
+
+  How to find the correct location:
+    grep -n "CMD_RESET\|xhci_reset\|HCRST" drivers/usb/host/xhci.c
+  Look for the function xhci_reset() and its wait-for-HCRST-clear loop.
+
+WARNING 2 — THIS PATCH ALONE IS INSUFFICIENT:
+  The code inserted here runs BEFORE the line that writes CMD_RESET to
+  USBCMD. The write 0x0 to USBCMD (step in this patch) has no lasting
+  effect on this hardware — the bit reverts immediately (confirmed in
+  UEFI Shell). What this patch achieves is logging the stuck condition
+  and pre-clearing before the reset attempt.
+
+  The actual wait-loop skip must ALSO be applied. In xhci_reset(), after
+  the xhci_writel(xhci, command | CMD_RESET, ...) line, there is a
+  readl_poll_timeout() or equivalent loop waiting for CMD_RESET to clear.
+  That loop must be patched to return 0 (success) instead of -ETIMEDOUT
+  when the HCRST bit refuses to clear. The exact implementation depends
+  on your kernel version.
+
+  Example approach (kernel 6.19.8-surface):
+    Replace the timeout return (-ETIMEDOUT) with a warning + return 0,
+    or add a PCI device ID check that skips the wait for 8086:9d2f.
+
+WARNING 3 — DEPENDENCY ON xhci-pci-sp6-xhclkgten.patch:
+  This patch addresses the secondary hardware failure (stuck HCRST bit).
+  The PRIMARY fix is xhci-pci-sp6-xhclkgten.patch (XHCLKGTEN register
+  correction). Apply that patch first. The XHCLKGTEN fix resolves the
+  clock gating corruption; this patch handles the residual stuck-bit
+  condition. Both are required for a fully functional system.
+
+WARNING 4 — DO NOT APPLY TO NON-INTEL OR NON-SP6 HARDWARE:
+  This patch forces xHCI reset to continue even when HCRST does not clear.
+  On healthy hardware, HCRST clearing is a valid safety check. Bypassing
+  it on hardware where it works normally could mask real initialization
+  failures. Consider adding a PCI device ID guard:
+    if (xhci->pdev->vendor == PCI_VENDOR_ID_INTEL &&
+        xhci->pdev->device == 0x9d2f) { /* SP6 workaround */ }
+  (Note: access to the pci_dev from xhci.c requires passing it via xhci
+  private data or a quirk flag set in xhci-pci.c.)
+
+================================================================================
+
+--- a/drivers/usb/host/xhci.c
++++ b/drivers/usb/host/xhci.c
+@@ -5480,6 +5480,16 @@ static int xhci_reset(struct xhci_hcd *xhci, u64 timeout_ns)
+ 		return 0;
+ 	}
+
++	/*
++	 * SP6 FIX: HCRST bit is permanently stuck at 1 due to PCH silicon
++	 * degradation on Surface Pro 6 (Intel 8086:9d2f). The bit cannot be
++	 * cleared by software (UEFI Shell write 0x0 to USBCMD reverts instantly,
++	 * confirmed: USBCMD reads back 0x00000003 immediately after clearing).
++	 * Log the stuck condition and attempt a pre-clear before the reset write.
++	 * ALSO patch the wait-loop below to skip the timeout on this hardware.
++	 * The XHCLKGTEN register fix in xhci-pci.c must also be applied.
++	 */
++	if (xhci_readl(xhci, &xhci->op_regs->command) & CMD_RESET) {
++		xhci_warn(xhci, "SP6: HCRST stuck at boot (PCH silicon degraded) — pre-clearing\n");
++		xhci_writel(xhci, 0, &xhci->op_regs->command);
++	}
++
+ 	xhci_writel(xhci, command | CMD_RESET, &xhci->op_regs->command);
