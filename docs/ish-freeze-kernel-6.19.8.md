@@ -46,7 +46,7 @@ The kernel parameter is used on purpose: it is honored inside the initramfs, whe
 
 ## What you lose
 
-The ISH exposes the accelerometer and the ambient light sensor. Without it there is no `iio` device, so `iio-sensor-proxy` has nothing to read: no automatic screen rotation and no automatic brightness. Manual rotation works fine with `xrandr -o left|normal` plus an `xinput` coordinate transformation matrix for the touchscreen, bound to a keyboard shortcut. Touch input itself keeps working with the in-kernel IPTS driver.
+The ISH exposes the accelerometer and the ambient light sensor. Without it there is no `iio` device, so `iio-sensor-proxy` has nothing to read: no automatic screen rotation and no automatic brightness. Manual rotation works fine with `xrandr -o left|normal` plus an `xinput` coordinate transformation matrix for the touchscreen, bound to a keyboard shortcut (see [`scripts/rotate-manual.sh`](../scripts/rotate-manual.sh)). Touch input itself keeps working with the in-kernel IPTS driver.
 
 ## Open questions
 
