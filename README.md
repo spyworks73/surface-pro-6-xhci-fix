@@ -4,6 +4,8 @@
 
 > **TL;DR:** The Intel xHCI USB controller on a Surface Pro 6 progressively dies due to silicon degradation in the PCH. The UEFI firmware sets register `XHCLKGTEN` (PCI config offset `0x50`) to the wrong value at `ExitBootServices()`, causing `xhci_hcd: can't setup: -110` on every OS. The fix is a 4-line patch in `drivers/usb/host/xhci-pci.c` that corrects this register value directly in the driver probe function. With a dead USB port, Ubuntu 24.04 must be installed via `debootstrap` from a companion machine.
 
+> **Update (November 2026):** after the USB fix, kernel 6.19.8 on this machine can also hard-freeze during early boot, caused by the Intel ISH sensor hub driver (`intel_ish_ipc`). Bisection results and the workaround are in [docs/ish-freeze-kernel-6.19.8.md](docs/ish-freeze-kernel-6.19.8.md).
+
 ---
 
 ## Table of Contents
